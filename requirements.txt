@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+alpaca-trade-api
+oandapyV20
+python-dotenv
+yfinance
+tqdm
+
