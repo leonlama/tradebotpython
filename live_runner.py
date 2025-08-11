@@ -28,12 +28,32 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import os, requests, datetime, pytz, time
 
 from pathlib import Path
 from notifier import TelegramNotifier, fmt_stats_line, local_now
 
 # --- import bot primitives ---
 from bot import DodaParams, LiveDodaBot, ensure_datetime_index
+
+TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Vienna"))
+
+def send_telegram(text: str):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            params={"chat_id": chat_id, "text": text[:3990]},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+def _vienna_now():
+    return datetime.datetime.now(tz=TZ)
 
 def now_utc():
     return datetime.now(timezone.utc)
@@ -172,6 +192,20 @@ def main():
         "losses": 0,
     }
 
+    # Telegram scheduling state
+    last_hourly = _vienna_now().replace(minute=0, second=0, microsecond=0)
+    next_hourly = last_hourly + datetime.timedelta(hours=1)
+
+    def next_22_vienna(from_dt=None):
+        now = _vienna_now() if from_dt is None else from_dt.astimezone(TZ)
+        target = now.replace(hour=22, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target = target + datetime.timedelta(days=1)
+        return target
+
+    next_daily = next_22_vienna()
+    trades_buffer = []
+
     def send_boot_message():
         if not notifier.enabled: return
         msg = (
@@ -235,6 +269,8 @@ def main():
     print("[live] entering loop; Ctrl+C to stop")
 
     send_boot_message()
+    send_telegram("✅ DODA bot started on Railway\nSymbol: "
+                 f"{os.getenv('SYMBOL','QQQ')} | TF: {os.getenv('TIMEFRAME','1Min')}")
 
     try:
         while True:
@@ -268,6 +304,13 @@ def main():
                         if intent["action"] in ("BUY","SELL"):
                             # commission on entry
                             cash -= p.commission_per_trade
+                            trades_buffer.append({
+                                "t": _vienna_now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "side": intent["action"],
+                                "qty": p.size,
+                                "px": round(row["close"], 4),
+                                "reason": "signal"
+                            })
                         elif intent["action"]=="CLOSE":
                             # realized PnL computed using bot's entry_price and current close
                             side = 1 if "LONG" in intent.get("reason","") else ( -1 if "SHORT" in intent.get("reason","") else 0 )
@@ -282,6 +325,14 @@ def main():
                                     "pnl": float(pnl), "reason": intent.get("reason","CLOSE")
                                 })
                                 cash += pnl
+
+                                trades_buffer.append({
+                                    "t": _vienna_now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "side": "CLOSE",
+                                    "qty": p.size,
+                                    "px": round(exit_px, 4),
+                                    "reason": intent.get("reason","CLOSE")
+                                })
 
                                 # Add trade notification
                                 side_str = "LONG" if bot.position==1 else "SHORT"
@@ -314,6 +365,31 @@ def main():
             # periodic notifications
             maybe_send_hourly(now_utc)
             maybe_send_daily_summary(now_utc)
+
+            # Telegram periodic notifications
+            now_vie = _vienna_now()
+
+            # Hourly update
+            if now_vie >= next_hourly:
+                if trades_buffer:
+                    lines = [f"{x['t']}  {x['side']} {x['qty']} @ {x['px']} ({x.get('reason','')})" for x in trades_buffer]
+                    send_telegram("🕐 Hourly update\n" + "\n".join(lines[-20:]))  # last 20 lines max
+                else:
+                    send_telegram("🕐 Hourly update\nNo trades in the last hour.")
+                next_hourly += datetime.timedelta(hours=1)
+
+            # Daily summary at 22:00 Vienna
+            if now_vie >= next_daily:
+                n = len(trades_buffer)
+                buys  = sum(1 for x in trades_buffer if x["side"] == "BUY")
+                sells = sum(1 for x in trades_buffer if x["side"] == "SELL")
+                closes= sum(1 for x in trades_buffer if x["side"] == "CLOSE")
+                send_telegram(
+                    "📅 Daily summary\n"
+                    f"Trades today: {n} (BUY {buys} / SELL {sells} / CLOSE {closes})"
+                )
+                trades_buffer.clear()
+                next_daily = next_22_vienna(now_vie)
 
             time.sleep(max(5, int(args.poll)))
     except KeyboardInterrupt:
