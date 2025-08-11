@@ -27,7 +27,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 import pytz
-import alpaca_trade_api as tradeapi
 
 from notifier import TelegramNotifier, fmt_stats_line, local_now
 from bot import DodaParams, LiveDodaBot, ensure_datetime_index
@@ -57,18 +56,57 @@ def now_utc():
 def round_down_minute(x: dt.datetime) -> dt.datetime:
     return x.replace(second=0, microsecond=0)
 
-# ---------------- Alpaca Setup ----------------
+# --- add near the other imports ---
+import os
+from datetime import timezone
+# optional: only import alpaca when used
+def fetch_alpaca(symbol: str, n_minutes: int = 600) -> pd.DataFrame:
+    try:
+        from alpaca_trade_api.rest import REST as AlpacaREST, TimeFrame, TimeFrameUnit
+    except Exception as e:
+        print("Please: pip install alpaca-trade-api", file=sys.stderr)
+        raise
 
-APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID")
-APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
-APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+    base_url = os.getenv("BROKER_URL", "https://paper-api.alpaca.markets")
+    key = os.getenv("API_KEY")
+    secret = os.getenv("API_SECRET")
+    if not (key and secret):
+        raise RuntimeError("Missing API_KEY / API_SECRET for Alpaca")
 
-api = tradeapi.REST(
-    APCA_API_KEY_ID,
-    APCA_API_SECRET_KEY,
-    APCA_API_BASE_URL,
-    api_version='v2'
-)
+    api = AlpacaREST(key_id=key, secret_key=secret, base_url=base_url)
+
+    end = pd.Timestamp.utcnow().tz_localize("UTC").floor("min")
+    start = end - pd.Timedelta(minutes=n_minutes + 5)
+
+    bars = api.get_bars(
+        symbol,
+        TimeFrame(1, TimeFrameUnit.Minute),
+        start.isoformat(),
+        end.isoformat(),
+        adjustment=None,
+        limit=n_minutes + 5
+    )
+
+    df = bars.df
+    if df.empty:
+        raise RuntimeError("Alpaca returned empty data")
+    # When multiple symbols are requested, df has 'symbol' col + multi-index;
+    # for single symbol it’s simpler, but normalize anyway:
+    if "symbol" in df.columns:
+        df = df[df["symbol"] == symbol]
+
+    # Ensure UTC index
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    else:
+        df.index = df.index.tz_convert("UTC")
+
+    # Keep canonical column names
+    df = df.rename(columns={
+        "open": "open", "high": "high", "low": "low",
+        "close": "close", "volume": "volume"
+    })[["open", "high", "low", "close", "volume"]]
+    return df
 
 # ---------------- Plot ----------------
 
@@ -200,11 +238,19 @@ def main():
         orders = api.list_orders(status="all", limit=50)
         return [f"{o.side.upper()} {o.qty} {o.symbol} @ {o.filled_avg_price}" for o in orders]
 
-    # bootstrap history
-    print(f"[boot] fetching history via Alpaca symbol={args.symbol}")
-    # Fetch historical data from Alpaca
-    df_hist = api.get_barset(args.symbol, 'minute', limit=args.history).df[args.symbol]
-    df_hist.index = df_hist.index.tz_convert('UTC')
+    # Which provider? (env var, not CLI)
+    provider = os.getenv("PROVIDER", "yahoo").lower()
+    symbol = args.symbol or os.getenv("SYMBOL", "QQQ")
+
+    print(f"[boot] fetching history via {provider.capitalize()} symbol={symbol}")
+    if provider == "alpaca":
+        df_hist = fetch_alpaca(symbol, n_minutes=args.history)
+    elif provider == "yahoo":
+        df_hist = fetch_yahoo(symbol, n_minutes=args.history)
+    else:
+        # fallback to yahoo
+        df_hist = fetch_yahoo(symbol, n_minutes=args.history)
+
     # only feed closed bars
     for ts, row in df_hist.iloc[:-1].iterrows():
         bot.step({
@@ -226,8 +272,10 @@ def main():
 
             # fetch recent window
             try:
-                df = api.get_barset(args.symbol, 'minute', limit=180).df[args.symbol]
-                df.index = df.index.tz_convert('UTC')
+                if provider == "alpaca":
+                    df = fetch_alpaca(symbol, n_minutes=180)
+                else:
+                    df = fetch_yahoo(symbol, n_minutes=180)
             except Exception as e:
                 print(f"[warn] fetch error: {e}")
                 time.sleep(max(5, args.poll))
