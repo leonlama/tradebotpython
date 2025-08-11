@@ -9,7 +9,7 @@ from alpaca.data.enums import DataFeed  # <-- correct home for DataFeed
 # ---------------------------
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
+ALPACA_FEED = os.getenv("ALPACA_FEED", "sip").lower()
 SYMBOLS = ["QQQ"]
 
 # Map string from env to correct DataFeed enum
