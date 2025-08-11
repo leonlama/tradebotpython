@@ -1,4 +1,4 @@
-import os
+kimport os
 import time
 import logging
 from datetime import datetime, timedelta
@@ -16,13 +16,13 @@ import requests
 # --- CONFIG ---
 SYMBOLS = ["SPY", "QQQ", "DIA", "DAX", "GLD", "USO"]
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", 30))
+ATR_PERIOD = int(os.getenv("ATR_PERIOD", 15))  # Moved ATR_PERIOD definition before HISTORY_MINUTES
 HISTORY_MINUTES = max(int(os.getenv("HISTORY_MINUTES", 1200)), ATR_PERIOD + 5)
 SIG_FAST = int(os.getenv("SIG_FAST", 3))
 SIG_MID = int(os.getenv("SIG_MID", 21))
 TR_FAST = int(os.getenv("TR_FAST", 13))
 TR_MID = int(os.getenv("TR_MID", 55))
 TR_SLOW = int(os.getenv("TR_SLOW", 144))
-ATR_PERIOD = int(os.getenv("ATR_PERIOD", 15))
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Vienna")
 API_KEY = os.getenv("APCA_API_KEY_ID") or os.getenv("API_KEY")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY") or os.getenv("API_SECRET")
