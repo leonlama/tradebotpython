@@ -4,7 +4,14 @@ import time
 import asyncio
 import signal
 import logging
-from alpaca.data.live import StockDataStream, DataFeed
+from alpaca.data.live import StockDataStream
+from alpaca.data.enums import DataFeed  # <-- correct home for DataFeed
+import alpaca
+import pkg_resources
+
+# Print versions at startup for debugging
+print("[info] alpaca-py:", alpaca.__version__)
+print("[info] websockets:", pkg_resources.get_distribution("websockets").version)
 
 # ---------------------------
 # CONFIGURATION
@@ -21,7 +28,7 @@ feed_map = {
     "otc": DataFeed.OTC
 }
 if ALPACA_FEED not in feed_map:
-    raise ValueError(f"Invalid ALPACA_FEED value: {ALPACA_FEED}")
+    raise ValueError(f"Invalid ALPACA_FEED: {ALPACA_FEED}. Use iex|sip|otc.")
 
 # Rate limit: 200 requests/minute
 MAX_CALLS_PER_MIN = 200
