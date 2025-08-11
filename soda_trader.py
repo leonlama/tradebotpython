@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """
 SODA Trader — multi-symbol Alpaca paper bot with dual 3-EMA confirmation
 
