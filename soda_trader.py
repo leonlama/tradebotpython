@@ -1,151 +1,141 @@
-import os
-import pytz
-import logging
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import numpy as np
-import ta
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from telegram import Bot
+import pytz
 
-# -------------------------
-# CONFIG
-# -------------------------
-API_KEY = os.getenv("APCA_API_KEY_ID")
-API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL")
-SYMBOL = os.getenv("SYMBOL", "QQQ")
+from notifier import TelegramNotifier
 
-# MA Periods
-SIG_FAST = int(os.getenv("SIG_FAST", 3))
-SIG_MID = int(os.getenv("SIG_MID", 21))
-TR_FAST = int(os.getenv("TR_FAST", 13))
-TR_MID = int(os.getenv("TR_MID", 55))
-TR_SLOW = int(os.getenv("TR_SLOW", 144))
+# ========= CONFIG =========
+API_KEY = "YOUR_ALPACA_KEY"
+API_SECRET = "YOUR_ALPACA_SECRET"
+SYMBOL = "QQQ"
+VIENNA_TZ = ZoneInfo("Europe/Vienna")
 
-# Telegram
-TELEGRAM_ENABLE = os.getenv("TELEGRAM_ENABLE", "0") == "1"
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BAR_TIMEFRAME = TimeFrame.Minute  # 1-min bars
+HISTORY_LOOKBACK = 200  # minutes for initial calc
 
-# Timezone
-TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Vienna"))
+TRADE_SIZE = 1
+COMMISSION = 0.0
+SLIPPAGE = 0.0
 
-# -------------------------
-# INIT
-# -------------------------
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
-logger = logging.getLogger("SodaTrader")
+SHORT_MA = 5
+MID_MA = 10
+LONG_MA = 20
 
-trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
+# Alpaca Clients
 data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
-bot = Bot(token=BOT_TOKEN) if TELEGRAM_ENABLE else None
+trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
 
-# -------------------------
-# HELPERS
-# -------------------------
-def send_telegram(msg):
-    if TELEGRAM_ENABLE:
-        asyncio.create_task(bot.send_message(chat_id=CHAT_ID, text=msg))
+# Telegram notifier
+notifier = TelegramNotifier()
 
-def fetch_bars(symbol, minutes):
-    end_dt = datetime.now(TZ)
-    start_dt = end_dt - timedelta(minutes=minutes)
-    bars = data_client.get_stock_bars(
-        StockBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=TimeFrame.Minute,
-            start=start_dt,
-            end=end_dt,
-            adjustment="raw"
-        )
+# Trade log
+trade_log = []
+
+# ========= STRATEGY =========
+def fetch_latest_data():
+    end_dt = datetime.now(pytz.UTC)
+    start_dt = end_dt - timedelta(minutes=HISTORY_LOOKBACK)
+    request_params = StockBarsRequest(
+        symbol_or_symbols=SYMBOL,
+        timeframe=BAR_TIMEFRAME,
+        start=start_dt,
+        end=end_dt
     )
-    df = pd.DataFrame([b.__dict__ for b in bars[symbol]])
-    df.set_index("timestamp", inplace=True)
+    bars = data_client.get_stock_bars(request_params).df
+    if bars.empty:
+        return pd.DataFrame()
+    df = bars.xs(SYMBOL, level=0)
+    df.index = df.index.tz_convert(VIENNA_TZ)
     return df
 
-def compute_doda(df):
-    # Signal Doda
-    df["sig_fast"] = df["close"].rolling(SIG_FAST).mean()
-    df["sig_mid"] = df["close"].rolling(SIG_MID).mean()
-    # Trend Doda
-    df["tr_fast"] = df["close"].rolling(TR_FAST).mean()
-    df["tr_mid"] = df["close"].rolling(TR_MID).mean()
-    df["tr_slow"] = df["close"].rolling(TR_SLOW).mean()
+def calculate_doda(df):
+    df["ma_short"] = df["close"].rolling(SHORT_MA).mean()
+    df["ma_mid"] = df["close"].rolling(MID_MA).mean()
+    df["ma_long"] = df["close"].rolling(LONG_MA).mean()
+
+    df["signal_doda"] = np.where(df["ma_short"] > df["ma_mid"], 1, -1)
+    df["trend_doda"] = np.where(df["ma_mid"] > df["ma_long"], 1, -1)
     return df
 
-def get_signal(df):
-    last = df.iloc[-1]
-    trend_up = last.tr_fast > last.tr_mid > last.tr_slow
-    trend_down = last.tr_fast < last.tr_mid < last.tr_slow
-    buy_sig = last.sig_fast > last.sig_mid
-    sell_sig = last.sig_fast < last.sig_mid
+def decide_trade(df, position):
+    latest = df.iloc[-1]
+    if latest["signal_doda"] == 1 and latest["trend_doda"] == 1:
+        if position <= 0:
+            return "buy"
+    elif latest["signal_doda"] == -1 and latest["trend_doda"] == -1:
+        if position >= 0:
+            return "sell"
+    return None
 
-    if buy_sig and trend_up:
-        return "BUY"
-    elif sell_sig and trend_down:
-        return "SELL"
-    else:
-        return None
+def execute_trade(side):
+    order = MarketOrderRequest(
+        symbol=SYMBOL,
+        qty=TRADE_SIZE,
+        side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+        time_in_force=TimeInForce.DAY
+    )
+    trading_client.submit_order(order)
+    price = fetch_latest_data().iloc[-1]["close"]
+    log_line = f"{datetime.now(VIENNA_TZ):%Y-%m-%d %H:%M} {side.upper()} {SYMBOL} @ {price:.2f}"
+    trade_log.append(log_line)
+    print(log_line)
+    if notifier.enabled:
+        notifier.send(f"📈 {log_line}")
 
-def place_trade(side, qty=1):
-    try:
-        order = trading_client.submit_order(
-            MarketOrderRequest(
-                symbol=SYMBOL,
-                qty=qty,
-                side=OrderSide.BUY if side == "BUY" else OrderSide.SELL,
-                time_in_force=TimeInForce.DAY
-            )
-        )
-        logger.info(f"Placed {side} order for {SYMBOL}")
-        send_telegram(f"📈 Trade executed: {side} {SYMBOL} at market")
-    except Exception as e:
-        logger.error(f"Trade failed: {e}")
+def get_position():
+    positions = trading_client.get_all_positions()
+    for pos in positions:
+        if pos.symbol == SYMBOL:
+            return int(pos.qty)
+    return 0
 
-# -------------------------
-# TASKS
-# -------------------------
-async def trading_loop():
-    df = fetch_bars(SYMBOL, 500)
-    df = compute_doda(df)
-    signal = get_signal(df)
-    if signal:
-        place_trade(signal)
-
-async def hourly_status():
-    df = fetch_bars(SYMBOL, 120)
-    last = df.iloc[-1]
-    msg = f"Hourly Update {SYMBOL} | Last Price: {last.close:.2f} | Time: {last.name}"
-    send_telegram(msg)
-
-async def daily_recap():
-    df = fetch_bars(SYMBOL, 1440)
-    change = (df.close.iloc[-1] - df.close.iloc[0]) / df.close.iloc[0] * 100
-    msg = f"📊 Daily Recap {SYMBOL}: {df.close.iloc[-1]:.2f} ({change:.2f}%)"
-    send_telegram(msg)
-
-# -------------------------
-# MAIN
-# -------------------------
-async def main():
-    scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(trading_loop, "interval", minutes=1)   # Run strategy every minute
-    scheduler.add_job(hourly_status, "interval", hours=1)    # Hourly updates
-    scheduler.add_job(daily_recap, "cron", hour=22, minute=0) # Daily recap 22:00 Vienna
-    scheduler.start()
-
-    logger.info("Soda Trader started (Paper Mode)")
+# ========= SCHEDULERS =========
+async def hourly_report_loop():
     while True:
-        await asyncio.sleep(1)
+        now = datetime.now(VIENNA_TZ)
+        next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+        await asyncio.sleep((next_hour - now).total_seconds())
+        if notifier.enabled:
+            msg = "🕐 Hourly update\n" + ("\n".join(trade_log[-10:]) if trade_log else "No trades this hour.")
+            notifier.send(msg)
+
+async def daily_report_loop():
+    while True:
+        now = datetime.now(VIENNA_TZ)
+        target = now.replace(hour=22, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        if notifier.enabled:
+            msg = "📅 Daily summary\n" + ("\n".join(trade_log) if trade_log else "No trades today.")
+            notifier.send(msg)
+
+# ========= MAIN LOOP =========
+async def trading_loop():
+    while True:
+        df = fetch_latest_data()
+        if not df.empty:
+            df = calculate_doda(df)
+            pos = get_position()
+            action = decide_trade(df, pos)
+            if action:
+                execute_trade(action)
+        await asyncio.sleep(60)  # check every 1 minute
+
+async def main():
+    asyncio.create_task(hourly_report_loop())
+    asyncio.create_task(daily_report_loop())
+    await trading_loop()
 
 if __name__ == "__main__":
     asyncio.run(main())

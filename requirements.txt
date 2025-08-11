@@ -1,17 +1,9 @@
+alpaca-py==0.20.0
 numpy>=1.24
 pandas>=2.0
 matplotlib
-scikit-learn
-#alpaca-trade-api>=3.0.2
-oandapyV20
-python-dotenv
-yfinance>=0.2.40
-tqdm
-requests
-argparse
-alpaca-py==0.20.0
 pytz
+requests
 ta
-apscheduler
-python-telegram-bot==13.15
+tqdm
 
