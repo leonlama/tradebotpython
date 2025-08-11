@@ -47,20 +47,23 @@ async def on_bar(bar):
 # STREAM LOOP WITH RECONNECT
 # ---------------------------
 async def main():
-    stream = StockDataStream(API_KEY, API_SECRET, feed=feed_map[ALPACA_FEED])
-
-    for symbol in SYMBOLS:
-        stream.subscribe_trades(on_trade, symbol)
-        stream.subscribe_bars(on_bar, symbol)
-
+    retry_delay = 5
     while True:
+        # create a fresh stream object every reconnect
+        stream = StockDataStream(API_KEY, API_SECRET, feed=feed_map[ALPACA_FEED])
+
+        # subscribe
+        for symbol in SYMBOLS:
+            stream.subscribe_trades(on_trade, symbol)
+            stream.subscribe_bars(on_bar, symbol)
+
         try:
             logger.info(f"Starting stream for {', '.join(SYMBOLS)} | feed={ALPACA_FEED}")
             await stream.run()
         except Exception as e:
             logger.error(f"Stream error: {e}")
-            logger.info("Reconnecting in 5 seconds...")
-            await asyncio.sleep(5)
+            logger.info(f"Reconnecting in {retry_delay} seconds...")
+            await asyncio.sleep(retry_delay)
 
 # ---------------------------
 # MAIN ENTRY POINT
