@@ -8,12 +8,13 @@ import numpy as np
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 from ta.trend import SMAIndicator
 from ta.volatility import AverageTrueRange
 import requests
 
 # --- CONFIG ---
-SYMBOLS = ["DAX", "DIA", "GLD", "QQQ", "SPY", "USO"]
+SYMBOLS = ["SPY", "QQQ", "DIA", "DAX", "GLD", "USO"]
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", 30))
 HISTORY_MINUTES = int(os.getenv("HISTORY_MINUTES", 1200))
 SIG_FAST = int(os.getenv("SIG_FAST", 3))
@@ -23,10 +24,10 @@ TR_MID = int(os.getenv("TR_MID", 55))
 TR_SLOW = int(os.getenv("TR_SLOW", 144))
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", 15))
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Vienna")
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
-APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")
+API_KEY = os.getenv("APCA_API_KEY_ID") or os.getenv("API_KEY")
+API_SECRET = os.getenv("APCA_API_SECRET_KEY") or os.getenv("API_SECRET")
+if not (API_KEY and API_SECRET):
+    raise SystemExit("Missing APCA_API_KEY_ID/APCA_API_SECRET_KEY (or API_KEY/API_SECRET).")
 
 # Telegram config
 TELEGRAM_ENABLE = os.getenv("TELEGRAM_ENABLE", "0") == "1"
@@ -49,19 +50,21 @@ def send_telegram(msg):
             logging.error(f"[telegram] failed: {e}")
 
 def fetch_data(symbols):
-    end_dt = datetime.now(pytz.UTC)
+    end_dt = datetime.now(pytz.UTC).replace(second=0, microsecond=0)
     start_dt = end_dt - timedelta(minutes=HISTORY_MINUTES)
     try:
         req = StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Minute,
             start=start_dt,
-            end=end_dt
+            end=end_dt,
+            feed=DataFeed.IEX,        # <-- force IEX (free) to avoid SIP entitlement errors
+            adjustment=None
         )
         bars = client.get_stock_bars(req)
-        if bars is None or bars.df.empty:
+        if bars is None or bars.df is None or bars.df.empty:
             return None
-        df = bars.df.reset_index()
+        df = bars.df.reset_index()      # Multi-symbol: columns include 'symbol' and 'timestamp'
         df.rename(columns={"timestamp": "time"}, inplace=True)
         return df
     except Exception as e:
@@ -94,10 +97,10 @@ def atr_stop_levels(df):
     return atr.iloc[-1]
 
 # --- Main Loop ---
-logging.info(f"[loop] starting — symbols={','.join(SYMBOLS)} poll={POLL_SECONDS}s feed={ALPACA_FEED}")
+logging.info(f"[loop] starting — symbols={','.join(SYMBOLS)} poll={POLL_SECONDS}s feed=iex")
 
 while True:
-    logging.info(f"[loop] polling data — symbols={','.join(SYMBOLS)} feed={ALPACA_FEED}")
+    logging.info(f"[loop] polling data — symbols={','.join(SYMBOLS)} feed=iex")
     data = fetch_data(SYMBOLS)
     if data is None or data.empty:
         logging.warning("[loop] no data received")
