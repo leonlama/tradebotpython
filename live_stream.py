@@ -293,11 +293,11 @@ async def main():
     stream.subscribe_trades(on_trade, symbol)
 
     print(f"[stream] starting for {symbol} | feed={ALPACA_FEED} | paper={PAPER}")
-    await stream.run()
+    await stream.start()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.get_event_loop().run_until_complete(main())
     except KeyboardInterrupt:
         print("Stopped.")
 
