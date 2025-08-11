@@ -4,15 +4,24 @@ import time
 import asyncio
 import signal
 import logging
-from alpaca.data.live import StockDataStream
+from alpaca.data.live import StockDataStream, DataFeed
 
 # ---------------------------
 # CONFIGURATION
 # ---------------------------
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-FEED = "iex"  # or "sip" for premium
+ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
 SYMBOLS = ["QQQ"]
+
+# Map string from env to correct DataFeed enum
+feed_map = {
+    "iex": DataFeed.IEX,
+    "sip": DataFeed.SIP,
+    "otc": DataFeed.OTC
+}
+if ALPACA_FEED not in feed_map:
+    raise ValueError(f"Invalid ALPACA_FEED value: {ALPACA_FEED}")
 
 # Rate limit: 200 requests/minute
 MAX_CALLS_PER_MIN = 200
@@ -74,8 +83,8 @@ async def start_stream():
 
     while not stop_event.is_set():
         try:
-            logger.info(f"Starting stream for {', '.join(SYMBOLS)} | feed={FEED}")
-            stream = StockDataStream(API_KEY, API_SECRET, feed=FEED)
+            logger.info(f"Starting stream for {', '.join(SYMBOLS)} | feed={ALPACA_FEED}")
+            stream = StockDataStream(API_KEY, API_SECRET, feed=feed_map[ALPACA_FEED])
 
             for symbol in SYMBOLS:
                 stream.subscribe_bars(on_bar, symbol)
