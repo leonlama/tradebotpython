@@ -16,7 +16,7 @@ import requests
 # --- CONFIG ---
 SYMBOLS = ["SPY", "QQQ", "DIA", "DAX", "GLD", "USO"]
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", 30))
-HISTORY_MINUTES = int(os.getenv("HISTORY_MINUTES", 1200))
+HISTORY_MINUTES = max(int(os.getenv("HISTORY_MINUTES", 1200)), ATR_PERIOD + 5)
 SIG_FAST = int(os.getenv("SIG_FAST", 3))
 SIG_MID = int(os.getenv("SIG_MID", 21))
 TR_FAST = int(os.getenv("TR_FAST", 13))
@@ -93,8 +93,11 @@ def doda_trend(df):
         return "NEUTRAL"
 
 def atr_stop_levels(df):
+    if len(df) < ATR_PERIOD:
+        logging.warning(f"[atr] Not enough data for ATR (have {len(df)}, need {ATR_PERIOD})")
+        return None
     atr = AverageTrueRange(df['high'], df['low'], df['close'], ATR_PERIOD).average_true_range()
-    return atr.iloc[-1]
+    return round(atr.iloc[-1], 4)
 
 # --- Main Loop ---
 logging.info(f"[loop] starting — symbols={','.join(SYMBOLS)} poll={POLL_SECONDS}s feed=iex")
@@ -120,7 +123,7 @@ while True:
 
         logging.info(f"[signal] {sym} DODA Signal = {sig}")
         logging.info(f"[trend]  {sym} DODA Trend  = {trd}")
-        logging.info(f"[atr]    {sym} ATR = {atr_val:.4f}")
+        logging.info(f"[atr]    {sym} ATR = {atr_val:.4f}" if atr_val is not None else f"[atr]    {sym} ATR = N/A")
 
         # Here would be your trade logic using sig & trd & atr_val
         # Example: both BUY -> open long, both SELL -> open short, diverge -> close
