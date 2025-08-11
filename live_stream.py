@@ -340,6 +340,11 @@ def main():
             trades_buffer.clear()
             next_daily = next_daily + dt.timedelta(days=1)
 
+    # Bar handler for debugging
+    @stream.on_bar(symbol)
+    async def handle_bar(bar):
+        print("BAR:", bar)
+
     # Start stream (SDK manages its own asyncio loop internally)
     stream = StockDataStream(API_KEY, API_SECRET, feed=FEED_ENUM)
     stream.subscribe_trades(on_trade, symbol)
