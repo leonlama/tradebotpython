@@ -19,21 +19,20 @@ Notes:
   - Requires bot.py in the same folder.
 """
 
-import os, time, sys, json, argparse, math, datetime as dt
+import os, sys, time, json, math
+import datetime as dt
 from dataclasses import asdict
-from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import os, requests, datetime, pytz, time
+import requests
+import pytz
 
-from pathlib import Path
 from notifier import TelegramNotifier, fmt_stats_line, local_now
-
-# --- import bot primitives ---
 from bot import DodaParams, LiveDodaBot, ensure_datetime_index
 
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Europe/Vienna"))
@@ -53,13 +52,13 @@ def send_telegram(text: str):
         pass
 
 def _vienna_now():
-    return datetime.datetime.now(tz=TZ)
+    return dt.datetime.now(tz=TZ)
 
 def now_utc():
-    return datetime.now(timezone.utc)
+    return dt.datetime.now(dt.timezone.utc)
 
-def round_down_minute(dt: datetime) -> datetime:
-    return dt.replace(second=0, microsecond=0)
+def round_down_minute(x: dt.datetime) -> dt.datetime:
+    return x.replace(second=0, microsecond=0)
 
 # ---------------- Data providers ----------------
 
@@ -194,13 +193,13 @@ def main():
 
     # Telegram scheduling state
     last_hourly = _vienna_now().replace(minute=0, second=0, microsecond=0)
-    next_hourly = last_hourly + datetime.timedelta(hours=1)
+    next_hourly = last_hourly + dt.timedelta(hours=1)
 
     def next_22_vienna(from_dt=None):
         now = _vienna_now() if from_dt is None else from_dt.astimezone(TZ)
         target = now.replace(hour=22, minute=0, second=0, microsecond=0)
         if now >= target:
-            target = target + datetime.timedelta(days=1)
+            target = target + dt.timedelta(days=1)
         return target
 
     next_daily = next_22_vienna()
@@ -376,7 +375,7 @@ def main():
                     send_telegram("🕐 Hourly update\n" + "\n".join(lines[-20:]))  # last 20 lines max
                 else:
                     send_telegram("🕐 Hourly update\nNo trades in the last hour.")
-                next_hourly += datetime.timedelta(hours=1)
+                next_hourly += dt.timedelta(hours=1)
 
             # Daily summary at 22:00 Vienna
             if now_vie >= next_daily:
