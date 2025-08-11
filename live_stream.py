@@ -7,11 +7,6 @@ import logging
 from alpaca.data.live import StockDataStream
 from alpaca.data.enums import DataFeed  # <-- correct home for DataFeed
 import alpaca
-import pkg_resources
-
-# Print versions at startup for debugging
-print("[info] alpaca-py:", alpaca.__version__)
-print("[info] websockets:", pkg_resources.get_distribution("websockets").version)
 
 # ---------------------------
 # CONFIGURATION
