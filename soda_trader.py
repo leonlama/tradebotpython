@@ -1,140 +1,116 @@
 import asyncio
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
+import pytz
 import pandas as pd
 import numpy as np
+import ta
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-import pytz
 
-from notifier import TelegramNotifier
+# ================= CONFIG =================
+ALPACA_API_KEY = "YOUR_API_KEY"
+ALPACA_SECRET_KEY = "YOUR_SECRET_KEY"
 
-# ========= CONFIG =========
-API_KEY = "YOUR_ALPACA_KEY"
-API_SECRET = "YOUR_ALPACA_SECRET"
 SYMBOL = "QQQ"
-VIENNA_TZ = ZoneInfo("Europe/Vienna")
+BAR_TIMEFRAME = TimeFrame.Minute
+HISTORY_LOOKBACK = 60  # minutes
+VIENNA_TZ = pytz.timezone("Europe/Vienna")
 
-BAR_TIMEFRAME = TimeFrame.Minute  # 1-min bars
-HISTORY_LOOKBACK = 200  # minutes for initial calc
+ORDER_QTY = 1
+EMA_SHORT = 9
+EMA_LONG = 21
+RSI_PERIOD = 14
 
-TRADE_SIZE = 1
-COMMISSION = 0.0
-SLIPPAGE = 0.0
+# Alpaca clients
+data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
 
-SHORT_MA = 5
-MID_MA = 10
-LONG_MA = 20
-
-# Alpaca Clients
-data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
-trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
-
-# Telegram notifier
-notifier = TelegramNotifier()
-
-# Trade log
-trade_log = []
-
-# ========= STRATEGY =========
+# ================= STRATEGY =================
 def fetch_latest_data():
+    """Fetch recent price data using free IEX feed."""
     end_dt = datetime.now(pytz.UTC)
     start_dt = end_dt - timedelta(minutes=HISTORY_LOOKBACK)
+
     request_params = StockBarsRequest(
         symbol_or_symbols=SYMBOL,
         timeframe=BAR_TIMEFRAME,
         start=start_dt,
-        end=end_dt
+        end=end_dt,
+        feed="iex"  # 👈 Free plan compatible
     )
+
     bars = data_client.get_stock_bars(request_params).df
     if bars.empty:
+        print("⚠ No data returned from Alpaca IEX feed.")
         return pd.DataFrame()
+
     df = bars.xs(SYMBOL, level=0)
     df.index = df.index.tz_convert(VIENNA_TZ)
     return df
 
-def calculate_doda(df):
-    df["ma_short"] = df["close"].rolling(SHORT_MA).mean()
-    df["ma_mid"] = df["close"].rolling(MID_MA).mean()
-    df["ma_long"] = df["close"].rolling(LONG_MA).mean()
-
-    df["signal_doda"] = np.where(df["ma_short"] > df["ma_mid"], 1, -1)
-    df["trend_doda"] = np.where(df["ma_mid"] > df["ma_long"], 1, -1)
+def apply_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Add EMA and RSI indicators."""
+    if df.empty:
+        return df
+    df["EMA_short"] = ta.trend.ema_indicator(df["close"], window=EMA_SHORT)
+    df["EMA_long"] = ta.trend.ema_indicator(df["close"], window=EMA_LONG)
+    df["RSI"] = ta.momentum.rsi(df["close"], window=RSI_PERIOD)
     return df
 
-def decide_trade(df, position):
-    latest = df.iloc[-1]
-    if latest["signal_doda"] == 1 and latest["trend_doda"] == 1:
-        if position <= 0:
-            return "buy"
-    elif latest["signal_doda"] == -1 and latest["trend_doda"] == -1:
-        if position >= 0:
-            return "sell"
-    return None
+def generate_signal(df: pd.DataFrame) -> str:
+    """Generate BUY/SELL/HOLD signals."""
+    if len(df) < max(EMA_SHORT, EMA_LONG, RSI_PERIOD):
+        return "HOLD"
 
-def execute_trade(side):
-    order = MarketOrderRequest(
+    latest = df.iloc[-1]
+    if latest["EMA_short"] > latest["EMA_long"] and latest["RSI"] < 70:
+        return "BUY"
+    elif latest["EMA_short"] < latest["EMA_long"] and latest["RSI"] > 30:
+        return "SELL"
+    return "HOLD"
+
+def execute_trade(signal: str):
+    """Place a market order if BUY or SELL."""
+    if signal not in ["BUY", "SELL"]:
+        return
+
+    order_data = MarketOrderRequest(
         symbol=SYMBOL,
-        qty=TRADE_SIZE,
-        side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+        qty=ORDER_QTY,
+        side=OrderSide.BUY if signal == "BUY" else OrderSide.SELL,
         time_in_force=TimeInForce.DAY
     )
-    trading_client.submit_order(order)
-    price = fetch_latest_data().iloc[-1]["close"]
-    log_line = f"{datetime.now(VIENNA_TZ):%Y-%m-%d %H:%M} {side.upper()} {SYMBOL} @ {price:.2f}"
-    trade_log.append(log_line)
-    print(log_line)
-    if notifier.enabled:
-        notifier.send(f"📈 {log_line}")
 
-def get_position():
-    positions = trading_client.get_all_positions()
-    for pos in positions:
-        if pos.symbol == SYMBOL:
-            return int(pos.qty)
-    return 0
+    try:
+        order = trading_client.submit_order(order_data)
+        print(f"✅ Placed {signal} order: {order.id}")
+    except Exception as e:
+        print(f"❌ Order failed: {e}")
 
-# ========= SCHEDULERS =========
-async def hourly_report_loop():
-    while True:
-        now = datetime.now(VIENNA_TZ)
-        next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-        await asyncio.sleep((next_hour - now).total_seconds())
-        if notifier.enabled:
-            msg = "🕐 Hourly update\n" + ("\n".join(trade_log[-10:]) if trade_log else "No trades this hour.")
-            notifier.send(msg)
-
-async def daily_report_loop():
-    while True:
-        now = datetime.now(VIENNA_TZ)
-        target = now.replace(hour=22, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target += timedelta(days=1)
-        await asyncio.sleep((target - now).total_seconds())
-        if notifier.enabled:
-            msg = "📅 Daily summary\n" + ("\n".join(trade_log) if trade_log else "No trades today.")
-            notifier.send(msg)
-
-# ========= MAIN LOOP =========
+# ================= MAIN LOOP =================
 async def trading_loop():
     while True:
         df = fetch_latest_data()
-        if not df.empty:
-            df = calculate_doda(df)
-            pos = get_position()
-            action = decide_trade(df, pos)
-            if action:
-                execute_trade(action)
-        await asyncio.sleep(60)  # check every 1 minute
+        if df.empty:
+            await asyncio.sleep(60)
+            continue
+
+        df = apply_indicators(df)
+        signal = generate_signal(df)
+        print(f"[{datetime.now(VIENNA_TZ).strftime('%H:%M:%S')}] Signal: {signal}")
+
+        execute_trade(signal)
+        await asyncio.sleep(60)  # wait 1 minute
 
 async def main():
-    asyncio.create_task(hourly_report_loop())
-    asyncio.create_task(daily_report_loop())
+    print("🚀 Soda Trader started with Alpaca IEX feed")
     await trading_loop()
 
 if __name__ == "__main__":
