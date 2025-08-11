@@ -341,7 +341,7 @@ def main():
             next_daily = next_daily + dt.timedelta(days=1)
 
     # Start stream (SDK manages its own asyncio loop internally)
-    stream = StockDataStream(API_KEY, API_SECRET, feed=ALPACA_FEED)  # 'iex' or 'sip'
+    stream = StockDataStream(API_KEY, API_SECRET, feed=FEED_ENUM)
     stream.subscribe_trades(on_trade, symbol)
     print(f"[stream] starting for {symbol} | feed={ALPACA_FEED} | paper={PAPER}")
     try:
