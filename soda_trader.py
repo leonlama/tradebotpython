@@ -259,7 +259,7 @@ def main():
 
             for sym in symbols:
                 df = dfs.get(sym) or pd.DataFrame()
-                if df.empty:
+                if df is None or df.empty:
                     log.warning(f"[{sym}] empty bars")
                     continue
 
