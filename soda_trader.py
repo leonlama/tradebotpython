@@ -16,7 +16,7 @@ import requests
 # --- CONFIG ---
 SYMBOLS = ["SPY", "QQQ", "DIA", "DAX", "GLD", "USO"]
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", 30))
-ATR_PERIOD = int(os.getenv("ATR_PERIOD", 15))  # Moved ATR_PERIOD definition before HISTORY_MINUTES
+ATR_PERIOD = int(os.getenv("ATR_PERIOD", 15))
 HISTORY_MINUTES = max(int(os.getenv("HISTORY_MINUTES", 1200)), ATR_PERIOD + 5)
 SIG_FAST = int(os.getenv("SIG_FAST", 3))
 SIG_MID = int(os.getenv("SIG_MID", 21))
@@ -58,13 +58,13 @@ def fetch_data(symbols):
             timeframe=TimeFrame.Minute,
             start=start_dt,
             end=end_dt,
-            feed=DataFeed.IEX,        # <-- force IEX (free) to avoid SIP entitlement errors
+            feed=DataFeed.IEX,
             adjustment=None
         )
         bars = client.get_stock_bars(req)
         if bars is None or bars.df is None or bars.df.empty:
             return None
-        df = bars.df.reset_index()      # Multi-symbol: columns include 'symbol' and 'timestamp'
+        df = bars.df.reset_index()
         df.rename(columns={"timestamp": "time"}, inplace=True)
         return df
     except Exception as e:
@@ -102,6 +102,9 @@ def atr_stop_levels(df):
 # --- Main Loop ---
 logging.info(f"[loop] starting — symbols={','.join(SYMBOLS)} poll={POLL_SECONDS}s feed=iex")
 
+# Initialize a dictionary to track positions for each symbol
+positions = {sym: None for sym in SYMBOLS}
+
 while True:
     logging.info(f"[loop] polling data — symbols={','.join(SYMBOLS)} feed=iex")
     data = fetch_data(SYMBOLS)
@@ -125,9 +128,25 @@ while True:
         logging.info(f"[trend]  {sym} DODA Trend  = {trd}")
         logging.info(f"[atr]    {sym} ATR = {atr_val:.4f}" if atr_val is not None else f"[atr]    {sym} ATR = N/A")
 
-        # Here would be your trade logic using sig & trd & atr_val
-        # Example: both BUY -> open long, both SELL -> open short, diverge -> close
-        # send_telegram(f"{sym} Signal={sig} Trend={trd} ATR={atr_val:.4f}")
+        # Trade decision logic
+        action = "NO TRADE"
+        if atr_val is not None and atr_val > 0:
+            if sig.upper() == "BUY" and trd.upper() == "BUY":
+                if positions[sym] != "LONG":
+                    action = "BUY"
+                    positions[sym] = "LONG"
+                    logging.info(f"[trade] {sym} Opening LONG")
+            elif sig.upper() == "SELL" and trd.upper() == "SELL":
+                if positions[sym] != "SHORT":
+                    action = "SELL"
+                    positions[sym] = "SHORT"
+                    logging.info(f"[trade] {sym} Opening SHORT")
+            elif positions[sym] is not None:
+                action = "CLOSE"
+                logging.info(f"[trade] {sym} Closing position")
+                positions[sym] = None
+
+        logging.info(f"[decision] {sym} Signal={sig} Trend={trd} => action={action}")
 
     time.sleep(POLL_SECONDS)
 
