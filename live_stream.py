@@ -151,7 +151,7 @@ async def main():
     hist = StockHistoricalDataClient(API_KEY, API_SECRET)
 
     # Warm-up history (minute bars)
-    end = pd.Timestamp.utcnow().tz_localize("UTC").floor("min")
+    end = pd.Timestamp.utcnow().tz_convert("UTC").floor("min")
     start = end - pd.Timedelta(minutes=args.history)
     req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute,
                            start=start, end=end, feed=FEED_ENUM, adjustment=None)
