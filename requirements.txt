@@ -12,3 +12,5 @@ argparse
 alpaca-py==0.20.0
 pytz
 ta
+apscheduler
+
