@@ -7,4 +7,5 @@ oandapyV20
 python-dotenv
 yfinance
 tqdm
+requests
 

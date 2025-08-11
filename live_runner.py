@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 live_runner.py — run DODA LiveDodaBot on near-real-time 1-minute data
@@ -20,16 +19,18 @@ Notes:
   - Requires bot.py in the same folder.
 """
 
-import os, time, sys, json, argparse, math
+import os, time, sys, json, argparse, math, datetime as dt
 from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
 from pathlib import Path
+from notifier import TelegramNotifier, fmt_stats_line, local_now
 
 # --- import bot primitives ---
 from bot import DodaParams, LiveDodaBot, ensure_datetime_index
@@ -157,6 +158,65 @@ def main():
     trades: List[Dict[str, Any]] = []
     equity_rows: List[Dict[str, Any]] = []
 
+    # notification setup
+    notifier = TelegramNotifier()
+    session_start, session_end = args.session if args.session else (None, None)
+
+    # buffers for hourly & daily summaries  
+    hourly_events: list[str] = []
+    last_hour_sent_utc: Optional[int] = None
+    day_accumulator = {
+        "trades": 0,
+        "gross_pnl": 0.0,
+        "wins": 0,
+        "losses": 0,
+    }
+
+    def send_boot_message():
+        if not notifier.enabled: return
+        msg = (
+            "✅ *DODA Live Bot started*\n"
+            f"Symbol: *{symbol}*\n"
+            f"Session (UTC): *{session_start}-{session_end}*\n"
+            f"Params: sig({p.sig_fast}/{p.sig_mid}) | trend({p.tr_fast}/{p.tr_mid}/{p.tr_slow})\n"
+            f"Risk: ATR{p.atr_period} SLx{p.sl_atr} TPx{p.tp_atr} "
+            f"BE:{p.breakeven_rr} Trail:{p.trail_atr}\n"
+            f"Stops: {'stop-entries' if p.use_stop_entries else 'market-open'} off={p.stop_offset}\n"
+            f"Costs: comm={p.commission_per_trade} slip={p.slippage}\n"
+            f"Size: {p.size} | Base: {p.base_equity}"
+        )
+        notifier.send(msg)
+
+    def maybe_send_hourly(now_utc: dt.datetime):
+        nonlocal last_hour_sent_utc, hourly_events
+        hour_marker = int(now_utc.replace(minute=0, second=0, microsecond=0).timestamp())
+        if last_hour_sent_utc is None:
+            last_hour_sent_utc = hour_marker
+            return
+        if hour_marker != last_hour_sent_utc:
+            if notifier.enabled:
+                text = "🕐 *Hourly update*\n" + ("\n".join(hourly_events) if hourly_events else "_No trades this hour_")
+                notifier.send(text)
+            hourly_events = []
+            last_hour_sent_utc = hour_marker
+
+    def maybe_send_daily_summary(now_utc: dt.datetime):
+        vienna_now = dt.datetime.now(ZoneInfo("Europe/Vienna"))
+        if vienna_now.hour == 22 and vienna_now.minute == 0:
+            if notifier.enabled:
+                pnl = day_accumulator["gross_pnl"]
+                msg = (
+                    "📊 *Daily Summary (Vienna 22:00)*\n"
+                    f"Trades: *{day_accumulator['trades']}* | Wins: *{day_accumulator['wins']}* | "
+                    f"Losses: *{day_accumulator['losses']}*\n"
+                    f"Net PnL: *{pnl:+.2f}*"
+                )
+                notifier.send(msg)
+            day_accumulator["trades"] = 0
+            day_accumulator["gross_pnl"] = 0.0
+            day_accumulator["wins"] = 0
+            day_accumulator["losses"] = 0
+
     # bootstrap history
     print(f"[boot] fetching history via {args.provider} symbol={symbol}")
     if args.provider == "twelvedata":
@@ -174,8 +234,12 @@ def main():
     last_seen_ts: Optional[pd.Timestamp] = df_hist.index[-1] if not df_hist.empty else None
     print("[live] entering loop; Ctrl+C to stop")
 
+    send_boot_message()
+
     try:
         while True:
+            now_utc = dt.datetime.now(tz=ZoneInfo("UTC"))
+
             # fetch recent window
             try:
                 if args.provider == "twelvedata":
@@ -187,7 +251,7 @@ def main():
                 time.sleep(max(5, args.poll))
                 continue
 
-            cutoff = round_down_minute(now_utc())
+            cutoff = round_down_minute(now_utc)
             df = df[df.index < cutoff]
             if last_seen_ts is not None:
                 df = df[df.index > last_seen_ts]
@@ -219,6 +283,18 @@ def main():
                                 })
                                 cash += pnl
 
+                                # Add trade notification
+                                side_str = "LONG" if bot.position==1 else "SHORT"
+                                tline = f"• {side_str} closed | PnL {pnl:+.2f}"
+                                hourly_events.append(tline)
+
+                                day_accumulator["trades"] += 1
+                                day_accumulator["gross_pnl"] += pnl
+                                if pnl > 0:
+                                    day_accumulator["wins"] += 1
+                                elif pnl < 0:
+                                    day_accumulator["losses"] += 1
+
                     # equity mark-to-market
                     px = row["close"]
                     mtm = 0.0 if bot.position==0 else (px - bot.entry_price) * (1 if bot.position==1 else -1) * p.size
@@ -233,7 +309,11 @@ def main():
                     edf = pd.DataFrame(equity_rows).set_index("time")
                     edf.to_csv(equity_path)
                     plot_equity(edf, str(equity_png))
-                    print(f"[live] {now_utc().isoformat()} updated -> {equity_png} last={last_seen_ts}")
+                    print(f"[live] {now_utc.isoformat()} updated -> {equity_png} last={last_seen_ts}")
+
+            # periodic notifications
+            maybe_send_hourly(now_utc)
+            maybe_send_daily_summary(now_utc)
 
             time.sleep(max(5, int(args.poll)))
     except KeyboardInterrupt:
