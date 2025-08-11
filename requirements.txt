@@ -13,4 +13,5 @@ alpaca-py==0.20.0
 pytz
 ta
 apscheduler
-telegram
+python-telegram-bot==13.15
+
