@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-live_runner.py — run DODA LiveDodaBot on near-real-time 1-minute data
+live_runner.py — run DODA LiveDodaBot on Alpaca
 
 Providers:
-  - twelvedata (requires API key; may be paywalled for NDX)
-  - yahoo (free; 1m, near-real-time but sometimes delayed; last ~1 day)
+  - alpaca (requires API key)
 
 Usage examples:
-  # Yahoo + QQQ (free)
-  python live_runner.py --provider yahoo --symbol QQQ --tz UTC --session 13 22 --poll 30
-
-  # Twelve Data + QQQ (free tier typically OK)
-  export TWELVEDATA_API_KEY=YOUR_KEY
-  python live_runner.py --provider twelvedata --symbol QQQ --tz UTC --session 13 22 --poll 30
+  # Alpaca + QQQ
+  python live_runner.py --symbol QQQ --tz UTC --session 13 22 --poll 30
 
 Notes:
   - This is a paper runner; it logs intents and marks fills like the backtester.
@@ -31,6 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 import pytz
+import alpaca_trade_api as tradeapi
 
 from notifier import TelegramNotifier, fmt_stats_line, local_now
 from bot import DodaParams, LiveDodaBot, ensure_datetime_index
@@ -60,61 +56,18 @@ def now_utc():
 def round_down_minute(x: dt.datetime) -> dt.datetime:
     return x.replace(second=0, microsecond=0)
 
-# ---------------- Data providers ----------------
+# ---------------- Alpaca Setup ----------------
 
-def fetch_yahoo(symbol: str, n_minutes: int = 600) -> pd.DataFrame:
-    try:
-        import yfinance as yf
-    except ImportError:
-        print("Please: pip install yfinance", file=sys.stderr)
-        sys.exit(1)
-    # Yahoo supports 1m for last ~7d via period param; we'll fetch '1d' for live
-    period = "1d" if n_minutes <= 1440 else "5d"
-    df = yf.download(symbol, interval="1m", period=period, auto_adjust=False, progress=False)
-    if df.empty:
-        raise RuntimeError("Yahoo returned empty data")
-    # Ensure DatetimeIndex UTC
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    else:
-        df.index = df.index.tz_convert("UTC")
-    df = df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
-    df = df[["open","high","low","close","volume"]]
-    return df
+APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID")
+APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
-def fetch_twelvedata(apikey: str, symbol: str, n_minutes: int = 600) -> pd.DataFrame:
-    import requests
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": "1min",
-        "format": "JSON",
-        "order": "ASC",
-        "timezone": "UTC",
-        "outputsize": min(n_minutes, 5000),
-        "apikey": apikey,
-    }
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    payload = r.json()
-    if "status" in payload and payload["status"] == "error":
-        raise RuntimeError(f"Twelve Data error: {payload.get('message','unknown')}")
-    vals = payload.get("values") or payload.get("data") or []
-    rows = []
-    for d in vals:
-        rows.append({
-            "time": pd.to_datetime(d["datetime"], utc=True),
-            "open": float(d["open"]),
-            "high": float(d["high"]),
-            "low": float(d["low"]),
-            "close": float(d["close"]),
-            "volume": float(d.get("volume", 0.0)),
-        })
-    df = pd.DataFrame(rows).sort_values("time").set_index("time")
-    if df.empty:
-        raise RuntimeError("Twelve Data returned empty data")
-    # Already UTC
-    return df[["open","high","low","close","volume"]]
+api = tradeapi.REST(
+    APCA_API_KEY_ID,
+    APCA_API_SECRET_KEY,
+    APCA_API_BASE_URL,
+    api_version='v2'
+)
 
 # ---------------- Plot ----------------
 
@@ -132,8 +85,7 @@ def plot_equity(equity_df: pd.DataFrame, out_png: str):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--provider", choices=["twelvedata","yahoo"], default="yahoo")
-    ap.add_argument("--symbol", type=str, default=None, help="Symbol (^NDX/QQQ for Yahoo; NDX/QQQ for TwelveData)")
+    ap.add_argument("--symbol", type=str, default="QQQ", help="Symbol for Alpaca")
     ap.add_argument("--tz", type=str, default="UTC")
     ap.add_argument("--session", type=int, nargs=2, default=[13,22], metavar=("START_H","END_H"))
     ap.add_argument("--poll", type=int, default=30, help="Seconds between data polls")
@@ -143,13 +95,6 @@ def main():
     ap.add_argument("--size", type=float, default=1.0)
     ap.add_argument("--history", type=int, default=1200, help="Minutes of history to bootstrap indicators")
     args = ap.parse_args()
-
-    # Defaults
-    symbol = args.symbol or ("QQQ" if args.provider=="yahoo" else "QQQ")
-    apikey = os.getenv("TWELVEDATA_API_KEY") if args.provider=="twelvedata" else None
-    if args.provider == "twelvedata" and not apikey:
-        print("Set TWELVEDATA_API_KEY or use --provider yahoo", file=sys.stderr)
-        sys.exit(1)
 
     # Best-1-week params
     p = DodaParams(
@@ -209,7 +154,7 @@ def main():
         if not notifier.enabled: return
         msg = (
             "✅ *DODA Live Bot started*\n"
-            f"Symbol: *{symbol}*\n"
+            f"Symbol: *{args.symbol}*\n"
             f"Session (UTC): *{session_start}-{session_end}*\n"
             f"Params: sig({p.sig_fast}/{p.sig_mid}) | trend({p.tr_fast}/{p.tr_mid}/{p.tr_slow})\n"
             f"Risk: ATR{p.atr_period} SLx{p.sl_atr} TPx{p.tp_atr} "
@@ -250,12 +195,15 @@ def main():
             day_accumulator["wins"] = 0
             day_accumulator["losses"] = 0
 
+    def get_today_trades():
+        orders = api.list_orders(status="all", limit=50)
+        return [f"{o.side.upper()} {o.qty} {o.symbol} @ {o.filled_avg_price}" for o in orders]
+
     # bootstrap history
-    print(f"[boot] fetching history via {args.provider} symbol={symbol}")
-    if args.provider == "twelvedata":
-        df_hist = fetch_twelvedata(apikey, symbol, n_minutes=args.history)
-    else:
-        df_hist = fetch_yahoo(symbol, n_minutes=args.history)
+    print(f"[boot] fetching history via Alpaca symbol={args.symbol}")
+    # Fetch historical data from Alpaca
+    df_hist = api.get_barset(args.symbol, 'minute', limit=args.history).df[args.symbol]
+    df_hist.index = df_hist.index.tz_convert('UTC')
     # only feed closed bars
     for ts, row in df_hist.iloc[:-1].iterrows():
         bot.step({
@@ -277,10 +225,8 @@ def main():
 
             # fetch recent window
             try:
-                if args.provider == "twelvedata":
-                    df = fetch_twelvedata(apikey, symbol, n_minutes=180)
-                else:
-                    df = fetch_yahoo(symbol, n_minutes=180)
+                df = api.get_barset(args.symbol, 'minute', limit=180).df[args.symbol]
+                df.index = df.index.tz_convert('UTC')
             except Exception as e:
                 print(f"[warn] fetch error: {e}")
                 time.sleep(max(5, args.poll))
@@ -298,11 +244,18 @@ def main():
                         "open": row["open"], "high": row["high"], "low": row["low"], "close": row["close"],
                         "volume": row["volume"],
                     })
-                    # execute intents (paper)
+                    # execute intents via Alpaca
                     for intent in intents:
                         if intent["action"] in ("BUY","SELL"):
-                            # commission on entry
-                            cash -= p.commission_per_trade
+                            # Place order via Alpaca
+                            api.submit_order(
+                                symbol=args.symbol,
+                                qty=p.size,
+                                side=intent["action"].lower(),
+                                type="market",
+                                time_in_force="day"
+                            )
+                            send_telegram(f"📈 {intent['action']} {p.size} {args.symbol} @ market price via Alpaca Paper Trading.")
                             trades_buffer.append({
                                 "t": _vienna_now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "side": intent["action"],
@@ -370,23 +323,12 @@ def main():
 
             # Hourly update
             if now_vie >= next_hourly:
-                if trades_buffer:
-                    lines = [f"{x['t']}  {x['side']} {x['qty']} @ {x['px']} ({x.get('reason','')})" for x in trades_buffer]
-                    send_telegram("🕐 Hourly update\n" + "\n".join(lines[-20:]))  # last 20 lines max
-                else:
-                    send_telegram("🕐 Hourly update\nNo trades in the last hour.")
+                send_telegram("📊 Hourly update:\n" + "\n".join(get_today_trades()))
                 next_hourly += dt.timedelta(hours=1)
 
             # Daily summary at 22:00 Vienna
             if now_vie >= next_daily:
-                n = len(trades_buffer)
-                buys  = sum(1 for x in trades_buffer if x["side"] == "BUY")
-                sells = sum(1 for x in trades_buffer if x["side"] == "SELL")
-                closes= sum(1 for x in trades_buffer if x["side"] == "CLOSE")
-                send_telegram(
-                    "📅 Daily summary\n"
-                    f"Trades today: {n} (BUY {buys} / SELL {sells} / CLOSE {closes})"
-                )
+                send_telegram("📅 End of day summary:\n" + "\n".join(get_today_trades()))
                 trades_buffer.clear()
                 next_daily = next_22_vienna(now_vie)
 
