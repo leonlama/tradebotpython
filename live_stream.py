@@ -33,7 +33,7 @@ from alpaca.data.live import StockDataStream
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from alpaca.common.enums import Feed
+from alpaca.data.enums import DataFeed
 
 from notifier import TelegramNotifier
 from bot import DodaParams, LiveDodaBot
@@ -103,8 +103,8 @@ async def main():
     if not (API_KEY and API_SECRET):
         raise SystemExit("Missing API_KEY / API_SECRET")
 
-    FEED = os.getenv("ALPACA_FEED", "iex").lower()
-    FEED_ENUM = Feed.IEX if FEED == "iex" else Feed.SIP
+    ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").lower()
+    FEED_ENUM = DataFeed.IEX if ALPACA_FEED == "iex" else DataFeed.SIP
     PAPER = os.getenv("PAPER","1") in ("1","true","True")
 
     symbol = args.symbol
@@ -138,7 +138,7 @@ async def main():
     if notifier.enabled:
         notifier.send(
             "✅ *DODA Live Bot (streaming)*\n"
-            f"Symbol: *{symbol}* | Feed: *{FEED.upper()}* | Paper: *{PAPER}*\n"
+            f"Symbol: *{symbol}* | Feed: *{ALPACA_FEED.upper()}* | Paper: *{PAPER}*\n"
             f"Session UTC: {p.session}\n"
             f"sig({p.sig_fast}/{p.sig_mid}) trend({p.tr_fast}/{p.tr_mid}/{p.tr_slow})\n"
             f"ATR{p.atr_period} SLx{p.sl_atr} TPx{p.tp_atr} BE:{p.breakeven_rr} Trail:{p.trail_atr}\n"
@@ -289,10 +289,10 @@ async def main():
                    "close": float(last["close"]), "volume": float(last.get("volume",0))}
 
     # Start data stream
-    stream = StockDataStream(API_KEY, API_SECRET, feed=FEED)  # IEX for free; SIP if enabled
+    stream = StockDataStream(API_KEY, API_SECRET, feed=FEED_ENUM)  # IEX for free; SIP if enabled
     stream.subscribe_trades(on_trade, symbol)
 
-    print(f"[stream] starting for {symbol} | feed={FEED} | paper={PAPER}")
+    print(f"[stream] starting for {symbol} | feed={ALPACA_FEED} | paper={PAPER}")
     await stream.run()
 
 if __name__ == "__main__":
