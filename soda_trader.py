@@ -259,6 +259,7 @@ def main():
         loop_started = time.time()
         try:
             # Fetch history
+            log.info(f"[loop] polling data — symbol={symbol} feed={feed_str}")
             df = fetch_m1(data, symbol, hist_m, feed)
             if df.empty:
                 log.warning("No data fetched (empty). Sleeping...")
@@ -286,6 +287,9 @@ def main():
             last_atr = float(atr.iloc[-1]) if np.isfinite(atr.iloc[-1]) else None
             sig = str(signal_state.iloc[-1]) if signal_state.size else "NEUTRAL"
             trd = str(trend_state.loc[last_ts]) if trend_state.size and last_ts in trend_state.index else "NEUTRAL"
+
+            log.info(f"[signal] DODA Signal = {sig}")
+            log.info(f"[trend]  DODA Trend  = {trd}")
 
             want_long  = (sig == "BUY"  and trd == "BUY")
             want_short = (sig == "SELL" and trd == "SELL")
@@ -415,7 +419,6 @@ def main():
         elapsed = time.time() - loop_started
         sleep_s = max(1.0, poll_s - elapsed)
         time.sleep(sleep_s)
-
 
 if __name__ == "__main__":
     main()
