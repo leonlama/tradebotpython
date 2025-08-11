@@ -9,3 +9,5 @@ yfinance>=0.2.40
 tqdm
 requests
 argparse
+alpaca-py==0.21.0
+pytz
