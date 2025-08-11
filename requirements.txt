@@ -8,4 +8,4 @@ python-dotenv
 yfinance
 tqdm
 requests
-
+argparse
